@@ -177,6 +177,9 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         let mut current_non_tool_block_index: Option<u32> = None;
         let mut tool_blocks_by_index: HashMap<usize, ToolBlockState> = HashMap::new();
         let mut open_tool_block_indices: HashSet<u32> = HashSet::new();
+        // 过滤空 thinking 块：缓存 content_block_start(thinking, thinking="")，
+        // 若紧接 content_block_stop(同 index) 且中间无 delta，则丢弃整对。
+        let mut pending_empty_thinking_start: Option<(u32, String)> = None;
 
         tokio::pin!(stream);
 
@@ -194,6 +197,13 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                             if let Some(data) = strip_sse_field(l, "data") {
                                 if data.trim() == "[DONE]" {
                                     log::debug!("[Claude/OpenRouter] <<< OpenAI SSE: [DONE]");
+
+                                    // 流结束时丢弃仍悬空的空 thinking 缓存（上游未发 stop 也未发 delta）
+                                    if pending_empty_thinking_start.take().is_some() {
+                                        log::debug!(
+                                            "[Claude/OpenRouter] >>> 流结束，丢弃悬空空 thinking 缓存"
+                                        );
+                                    }
 
                                     // 流正常结束，发出缓存的 message_delta（含完整 usage）。
                                     if let Some((stop_reason, usage_json)) = pending_message_delta.take() {
@@ -232,7 +242,78 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                 }
 
                                 if passthrough_anthropic {
-                                    // 透传：原样下发原始 SSE 行，保证 content_block_start/stop 配对完整
+                                    // 透传：原样下发原始 SSE 行，保证 content_block_start/stop 配对完整。
+                                    // 修复：过滤空 thinking 块——上游(glm-5.2 经 bzboy 中转)偶发发送
+                                    // content_block_start(thinking, thinking="") 紧接 content_block_stop(同index)
+                                    // 且中间无 delta，Claude Code 会渲染成 <think /> 占位符。
+                                    // 策略：缓存空 start；若紧接同index stop 且无 delta，丢弃整对；
+                                    // 若期间出现 delta，flush 缓存的 start 后正常透传。
+                                    if let Ok(json) = serde_json::from_str::<Value>(data) {
+                                        let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        let index = json.get("index").and_then(|v| v.as_u64()).map(|i| i as u32);
+
+                                        match event_type {
+                                            "content_block_start" => {
+                                                let block = json.get("content_block");
+                                                let block_type = block
+                                                    .and_then(|b| b.get("type"))
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                if block_type == "thinking" {
+                                                    let thinking_text = block
+                                                        .and_then(|b| b.get("thinking"))
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("");
+                                                    if thinking_text.is_empty() {
+                                                        // 缓存空 start，暂不下发；等 delta 或 stop 决定
+                                                        if let Some(idx) = index {
+                                                            pending_empty_thinking_start = Some((idx, data.to_string()));
+                                                            log::debug!(
+                                                                "[Claude/OpenRouter] >>> 暂存空 thinking start (index={idx})，等 delta 或 stop"
+                                                            );
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            "content_block_delta" => {
+                                                if let Some(idx) = index {
+                                                    if let Some((pending_idx, pending_data)) =
+                                                        pending_empty_thinking_start.take()
+                                                    {
+                                                        if pending_idx == idx {
+                                                            // 有 delta 到达，此 thinking 块非空，flush 缓存的 start 后正常透传
+                                                            log::debug!(
+                                                                "[Claude/OpenRouter] >>> flush 暂存的空 thinking start (index={idx})，因收到 delta"
+                                                            );
+                                                            let sse_data = format!(
+                                                                "data: {}\n\n",
+                                                                pending_data
+                                                            );
+                                                            yield Ok(Bytes::from(sse_data));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            "content_block_stop" => {
+                                                if let Some(idx) = index {
+                                                    if let Some((pending_idx, _)) =
+                                                        pending_empty_thinking_start.take()
+                                                    {
+                                                        if pending_idx == idx {
+                                                            // 空 thinking 块：start 后紧接 stop，无 delta → 丢弃整对
+                                                            log::debug!(
+                                                                "[Claude/OpenRouter] >>> 丢弃空 thinking 块 (index={idx})：start 后无 delta 紧接 stop"
+                                                            );
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
                                     let sse_data = format!("data: {}\n\n", data);
                                     if !passthrough_emitted_message_start {
                                         log::debug!("[Claude/OpenRouter] >>> Anthropic SSE(passthrough): {}", data.split(',').next().unwrap_or(""));
