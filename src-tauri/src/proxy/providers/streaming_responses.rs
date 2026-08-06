@@ -2024,11 +2024,9 @@ mod tests {
                         == Some("signature_delta")
             })
             .expect("encrypted reasoning must emit a signature delta");
-        assert!(
-            events[signature_position]["delta"]["signature"]
-                .as_str()
-                .is_some_and(|value| value.starts_with("ccswitch-openai-reasoning-v1:"))
-        );
+        assert!(events[signature_position]["delta"]["signature"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("ccswitch-openai-reasoning-v1:")));
         let stop_position = events
             .iter()
             .position(|event| {
@@ -2037,16 +2035,12 @@ mod tests {
             })
             .expect("thinking block must stop");
         assert!(signature_position < stop_position);
-        assert!(
-            events
-                .iter()
-                .any(|event| event.get("type").and_then(Value::as_str) == Some("message_delta"))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|event| event.get("type").and_then(Value::as_str) == Some("message_stop"))
-        );
+        assert!(events
+            .iter()
+            .any(|event| event.get("type").and_then(Value::as_str) == Some("message_delta")));
+        assert!(events
+            .iter()
+            .any(|event| event.get("type").and_then(Value::as_str) == Some("message_stop")));
     }
 
     #[tokio::test]
