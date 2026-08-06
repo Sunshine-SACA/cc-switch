@@ -219,16 +219,15 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                 // 且没有 OpenAI 的 "choices" 字段。
                                 // 一旦判定为 Anthropic 格式，整条流直接透传原始 SSE 行，
                                 // 跳过 OpenAIStreamChunk 反序列化。
-                                if !passthrough_anthropic {
-                                    if data.contains("\"type\":\"message_start\"")
+                                if !passthrough_anthropic
+                                    && (data.contains("\"type\":\"message_start\"")
                                         || data.contains("\"type\":\"content_block_start\"")
                                         || data.contains("\"type\":\"content_block_delta\"")
                                         || data.contains("\"type\":\"content_block_stop\"")
-                                        || data.contains("\"type\":\"message_delta\"")
-                                    {
-                                        passthrough_anthropic = true;
-                                        log::debug!("[Claude/OpenRouter] 检测到上游为Anthropic格式，切换为透传模式");
-                                    }
+                                        || data.contains("\"type\":\"message_delta\""))
+                                {
+                                    passthrough_anthropic = true;
+                                    log::debug!("[Claude/OpenRouter] 检测到上游为Anthropic格式，切换为透传模式");
                                 }
 
                                 if passthrough_anthropic {
