@@ -1663,7 +1663,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypted_reasoning_without_summary_uses_redacted_thinking() {
+    fn test_encrypted_reasoning_without_summary_uses_empty_thinking_signature() {
         let original = json!({
             "type": "reasoning",
             "id": "rs_empty",
@@ -1681,10 +1681,10 @@ mod tests {
 
         let anthropic = responses_to_anthropic(response).unwrap();
         let thinking = anthropic["content"][0].clone();
-        // 仅密文无明文 → redacted_thinking，不下发空 thinking
-        assert_eq!(thinking["type"], "redacted_thinking");
-        assert!(thinking.get("thinking").is_none());
-        assert!(thinking["data"]
+        assert_eq!(thinking["type"], "thinking");
+        assert_eq!(thinking["thinking"], "");
+        assert!(thinking.get("data").is_none());
+        assert!(thinking["signature"]
             .as_str()
             .is_some_and(|value| value.starts_with("ccswitch-openai-reasoning-v1:")));
 

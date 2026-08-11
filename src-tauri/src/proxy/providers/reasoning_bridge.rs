@@ -58,18 +58,10 @@ pub(crate) fn anthropic_block_from_openai_reasoning_item(item: &Value) -> Option
 
     if has_encrypted_content {
         let envelope = encode_openai_reasoning_item(item)?;
-        // 有明文 summary → 正常 thinking 块（thinking + signature）
-        // 无明文（仅 encrypted_content 密文）→ redacted_thinking 块，避免向客户端下发空 thinking
-        if !text.is_empty() {
-            return Some(json!({
-                "type": "thinking",
-                "thinking": text,
-                "signature": envelope
-            }));
-        }
         return Some(json!({
-            "type": "redacted_thinking",
-            "data": envelope
+            "type": "thinking",
+            "thinking": text,
+            "signature": envelope
         }));
     }
 
@@ -109,7 +101,6 @@ mod tests {
         });
         let block = anthropic_block_from_openai_reasoning_item(&item).unwrap();
         assert_eq!(block["type"], "thinking");
-        assert_eq!(block["thinking"], "Need a tool.");
         assert_eq!(
             openai_reasoning_item_from_anthropic_block(&block),
             Some(item)
@@ -117,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_item_without_summary_yields_redacted_thinking() {
+    fn encrypted_item_without_summary_uses_empty_thinking_signature() {
         let item = json!({
             "id": "rs_2",
             "type": "reasoning",
@@ -126,10 +117,10 @@ mod tests {
             "future_field": {"preserved": true}
         });
         let block = anthropic_block_from_openai_reasoning_item(&item).unwrap();
-        // 仅密文无明文 → redacted_thinking（data 承载不透明签名），不下发空 thinking
-        assert_eq!(block["type"], "redacted_thinking");
-        assert!(block.get("thinking").is_none());
-        assert!(block["data"]
+        assert_eq!(block["type"], "thinking");
+        assert_eq!(block["thinking"], "");
+        assert!(block.get("data").is_none());
+        assert!(block["signature"]
             .as_str()
             .is_some_and(|value| value.starts_with(OPENAI_REASONING_ITEM_PREFIX)));
         assert_eq!(

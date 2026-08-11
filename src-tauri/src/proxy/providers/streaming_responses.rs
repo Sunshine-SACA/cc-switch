@@ -1379,40 +1379,6 @@ pub fn create_anthropic_sse_stream_from_responses<E: std::error::Error + Send + 
                                             .unwrap_or_else(|| item.clone());
                                         let anthropic_block =
                                             anthropic_block_from_openai_reasoning_item(&final_item);
-                                        let block_type = anthropic_block
-                                            .as_ref()
-                                            .and_then(|b| b.get("type"))
-                                            .and_then(Value::as_str)
-                                            .unwrap_or("thinking");
-
-                                        // 仅密文无明文的 reasoning → redacted_thinking 块：
-                                        // 不下发空 thinking_delta，直接以 redacted_thinking 开块。
-                                        if block_type == "redacted_thinking" {
-                                            if !open_indices.contains(&index) {
-                                                let start_event = json!({
-                                                    "type": "content_block_start",
-                                                    "index": index,
-                                                    "content_block": anthropic_block
-                                                });
-                                                let start_sse = format!("event: content_block_start\ndata: {}\n\n",
-                                                    serde_json::to_string(&start_event).unwrap_or_default());
-                                                yield Ok(Bytes::from(start_sse));
-                                                open_indices.insert(index);
-                                            }
-                                            if open_indices.remove(&index) {
-                                                let stop_event = json!({"type": "content_block_stop", "index": index});
-                                                let stop_sse = format!("event: content_block_stop\ndata: {}\n\n",
-                                                    serde_json::to_string(&stop_event).unwrap_or_default());
-                                                yield Ok(Bytes::from(stop_sse));
-                                            }
-                                            if let Some(id) = item_id {
-                                                reasoning_index_by_item_id.remove(id);
-                                            }
-                                            reasoning_item_by_index.remove(&index);
-                                            reasoning_text_by_index.remove(&index);
-                                            continue;
-                                        }
-
                                         let full_text = anthropic_block
                                             .as_ref()
                                             .and_then(|block| block.get("thinking"))
@@ -2003,7 +1969,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_encrypted_reasoning_without_summary_emits_redacted_thinking() {
+    async fn test_encrypted_reasoning_without_summary_emits_empty_thinking_signature() {
         let input = concat!(
             "event: response.created\n",
             "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_reason_empty\",\"model\":\"gpt-5.6\"}}\n\n",
@@ -2032,37 +1998,43 @@ mod tests {
             })
             .collect();
 
-        let redacted_start = events
+        let thinking_start = events
             .iter()
             .position(|event| {
                 event.get("type").and_then(Value::as_str) == Some("content_block_start")
                     && event.pointer("/content_block/type").and_then(Value::as_str)
-                        == Some("redacted_thinking")
+                        == Some("thinking")
             })
-            .expect("encrypted reasoning without summary must open a redacted_thinking block");
-        let redacted_index = events[redacted_start]["index"].as_u64().unwrap();
-        assert!(events[redacted_start]["content_block"]["data"]
-            .as_str()
-            .is_some_and(|value| value.starts_with("ccswitch-openai-reasoning-v1:")));
-        // 不应再出现空 thinking 块、thinking_delta 或 signature_delta
+            .expect("encrypted reasoning must start a thinking block");
+        let thinking_index = events[thinking_start]["index"].as_u64().unwrap();
+        assert_eq!(events[thinking_start]["content_block"]["thinking"], "");
         assert!(!events.iter().any(|event| {
             event.pointer("/content_block/type").and_then(Value::as_str)
-                == Some("thinking")
+                == Some("redacted_thinking")
         }));
         assert!(!events.iter().any(|event| {
             event.pointer("/delta/type").and_then(Value::as_str) == Some("thinking_delta")
         }));
-        assert!(!events.iter().any(|event| {
-            event.pointer("/delta/type").and_then(Value::as_str) == Some("signature_delta")
-        }));
+
+        let signature_position = events
+            .iter()
+            .position(|event| {
+                event.get("index").and_then(Value::as_u64) == Some(thinking_index)
+                    && event.pointer("/delta/type").and_then(Value::as_str)
+                        == Some("signature_delta")
+            })
+            .expect("encrypted reasoning must emit a signature delta");
+        assert!(events[signature_position]["delta"]["signature"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("ccswitch-openai-reasoning-v1:")));
         let stop_position = events
             .iter()
             .position(|event| {
                 event.get("type").and_then(Value::as_str) == Some("content_block_stop")
-                    && event.get("index").and_then(Value::as_u64) == Some(redacted_index)
+                    && event.get("index").and_then(Value::as_u64) == Some(thinking_index)
             })
-            .expect("redacted_thinking block must stop");
-        assert!(redacted_start < stop_position);
+            .expect("thinking block must stop");
+        assert!(signature_position < stop_position);
         assert!(events
             .iter()
             .any(|event| event.get("type").and_then(Value::as_str) == Some("message_delta")));
