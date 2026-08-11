@@ -3,7 +3,6 @@ import { failoverApi } from "@/lib/api/failover";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { extractErrorMessage } from "@/utils/errorUtils";
-import { proxyKeys } from "@/lib/query/proxy";
 
 // ========== 熔断器 Hooks ==========
 
@@ -48,7 +47,7 @@ export function useResetCircuitBreaker() {
       });
       // 刷新代理状态（更新 active_targets）
       queryClient.invalidateQueries({
-        queryKey: proxyKeys.status,
+        queryKey: ["proxyStatus"],
       });
     },
   });
@@ -228,9 +227,7 @@ export function useSetAutoFailoverEnabled() {
           ? "Claude"
           : variables.appType === "codex"
             ? "Codex"
-            : variables.appType === "grokbuild"
-              ? "Grok Build"
-              : "Gemini";
+            : "Gemini";
 
       toast.success(
         variables.enabled
@@ -284,7 +281,7 @@ export function useSetAutoFailoverEnabled() {
         queryKey: ["providers", variables.appType],
       });
       queryClient.invalidateQueries({
-        queryKey: proxyKeys.status,
+        queryKey: ["proxyStatus"],
       });
     },
   });

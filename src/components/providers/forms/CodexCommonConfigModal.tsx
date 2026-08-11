@@ -9,7 +9,7 @@ interface CodexCommonConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
   value: string;
-  onSave: (value: string) => boolean | Promise<boolean>;
+  onSave: (value: string) => boolean;
   error?: string;
   onExtract?: () => void;
   isExtracting?: boolean;
@@ -58,8 +58,8 @@ export const CodexCommonConfigModal: React.FC<CodexCommonConfigModalProps> = ({
     onClose();
   };
 
-  const handleSave = async () => {
-    if (await onSave(draftValue)) {
+  const handleSave = () => {
+    if (onSave(draftValue)) {
       onClose();
     }
   };

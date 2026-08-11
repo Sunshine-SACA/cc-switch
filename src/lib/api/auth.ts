@@ -1,9 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type ManagedAuthProvider =
-  | "github_copilot"
-  | "codex_oauth"
-  | "xai_oauth";
+export type ManagedAuthProvider = "github_copilot" | "codex_oauth";
 
 export interface ManagedAuthAccount {
   id: string;
@@ -13,7 +10,6 @@ export interface ManagedAuthAccount {
   authenticated_at: number;
   is_default: boolean;
   github_domain: string;
-  requires_reauth: boolean;
 }
 
 export interface ManagedAuthStatus {

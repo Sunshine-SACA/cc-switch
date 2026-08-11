@@ -17,7 +17,6 @@ interface DirectorySettingsProps {
   claudeDir?: string;
   codexDir?: string;
   geminiDir?: string;
-  grokDir?: string;
   opencodeDir?: string;
   openclawDir?: string;
   hermesDir?: string;
@@ -35,7 +34,6 @@ export function DirectorySettings({
   claudeDir,
   codexDir,
   geminiDir,
-  grokDir,
   opencodeDir,
   openclawDir,
   hermesDir,
@@ -126,17 +124,6 @@ export function DirectorySettings({
           onChange={(val) => onDirectoryChange("gemini", val)}
           onBrowse={() => onBrowseDirectory("gemini")}
           onReset={() => onResetDirectory("gemini")}
-        />
-
-        <DirectoryInput
-          label={t("settings.grokConfigDir")}
-          description={undefined}
-          value={grokDir}
-          resolvedValue={resolvedDirs.grokbuild}
-          placeholder={t("settings.browsePlaceholderGrok")}
-          onChange={(val) => onDirectoryChange("grokbuild", val)}
-          onBrowse={() => onBrowseDirectory("grokbuild")}
-          onReset={() => onResetDirectory("grokbuild")}
         />
 
         <DirectoryInput

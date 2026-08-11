@@ -14,8 +14,7 @@ export type ClaudeModelEnvField =
   | "ANTHROPIC_DEFAULT_OPUS_MODEL"
   | "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"
   | "ANTHROPIC_DEFAULT_FABLE_MODEL"
-  | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"
-  | "CLAUDE_CODE_SUBAGENT_MODEL";
+  | "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME";
 
 export const CLAUDE_ONE_M_MARKER = "[1M]";
 
@@ -82,10 +81,6 @@ function parseModelsFromConfig(settingsConfig: string) {
       typeof env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME === "string"
         ? env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME
         : stripClaudeOneMMarker(fable);
-    const subagent =
-      typeof env.CLAUDE_CODE_SUBAGENT_MODEL === "string"
-        ? env.CLAUDE_CODE_SUBAGENT_MODEL
-        : "";
 
     return {
       model,
@@ -97,7 +92,6 @@ function parseModelsFromConfig(settingsConfig: string) {
       opusName,
       fable,
       fableName,
-      subagent,
     };
   } catch {
     return {
@@ -110,7 +104,6 @@ function parseModelsFromConfig(settingsConfig: string) {
       opusName: "",
       fable: "",
       fableName: "",
-      subagent: "",
     };
   }
 }
@@ -141,7 +134,6 @@ export function useModelState({
   const [defaultFableModelName, setDefaultFableModelName] = useState(
     initial.fableName,
   );
-  const [subagentModel, setSubagentModel] = useState(initial.subagent);
 
   const isUserEditingRef = useRef(false);
   const lastConfigRef = useRef(settingsConfig);
@@ -172,7 +164,6 @@ export function useModelState({
     setDefaultOpusModelName(parsed.opusName);
     setDefaultFableModel(parsed.fable);
     setDefaultFableModelName(parsed.fableName);
-    setSubagentModel(parsed.subagent);
   }, [settingsConfig]);
 
   const handleModelChange = useCallback(
@@ -195,7 +186,6 @@ export function useModelState({
         setDefaultFableModel(value);
       if (field === "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME")
         setDefaultFableModelName(value);
-      if (field === "CLAUDE_CODE_SUBAGENT_MODEL") setSubagentModel(value);
 
       try {
         const currentConfig = latestConfigRef.current
@@ -243,8 +233,6 @@ export function useModelState({
     setDefaultFableModel,
     defaultFableModelName,
     setDefaultFableModelName,
-    subagentModel,
-    setSubagentModel,
     handleModelChange,
   };
 }

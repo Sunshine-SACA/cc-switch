@@ -22,14 +22,8 @@ import { extractErrorMessage } from "@/utils/errorUtils";
 import { openclawKeys } from "@/hooks/useOpenClaw";
 import {
   extractCodexWireApi,
-  isCodexAnthropicWireApi,
   isCodexChatWireApi,
 } from "@/utils/providerConfigUtils";
-import {
-  providerNeedsRouting,
-  supportsOfficialProxyTakeover,
-} from "@/utils/providerCapabilities";
-import { isOAuthProviderType } from "@/config/constants";
 
 /**
  * Hook for managing provider actions (add, update, delete, switch)
@@ -83,8 +77,6 @@ export function useProviderActions(
         suggestedDefaults?: OpenClawSuggestedDefaults;
         addToLive?: boolean;
         ensureClaudeDesktopOfficialSeed?: boolean;
-        ensureCodexOfficialSeed?: boolean;
-        ensureGrokBuildOfficialSeed?: boolean;
       },
     ) => {
       const enhanced = injectCodingPlanUsageScript(activeApp, provider);
@@ -164,7 +156,7 @@ export function useProviderActions(
         activeApp === "claude" &&
         provider.meta?.providerType === "github_copilot";
       const isCodexChatFormat =
-        (activeApp === "codex" || activeApp === "grokbuild") &&
+        activeApp === "codex" &&
         (provider.meta?.apiFormat === "openai_chat" ||
           (typeof (provider.settingsConfig as Record<string, any>)?.config ===
             "string" &&
@@ -173,39 +165,13 @@ export function useProviderActions(
                 (provider.settingsConfig as Record<string, any>).config,
               ),
             )));
-      const isCodexAnthropicFormat =
-        (activeApp === "codex" || activeApp === "grokbuild") &&
-        (provider.meta?.apiFormat === "anthropic" ||
-          (typeof (provider.settingsConfig as Record<string, any>)?.config ===
-            "string" &&
-            isCodexAnthropicWireApi(
-              extractCodexWireApi(
-                (provider.settingsConfig as Record<string, any>).config,
-              ),
-            )));
 
-      // Claude Desktop 的路由开关就是代理进程本身；其余应用还必须开启当前
-      // 应用的 takeover。不能只看全局进程，否则其它应用已接管时会漏判；也
-      // 不能只看 takeover，否则 Desktop 在路由已运行时会持续误报。
-      const routingReady =
-        activeApp === "claude-desktop"
-          ? isProxyRunning === true
-          : isProxyTakeover === true;
-
-      // Determine why this provider requires the proxy.
+      // Determine why this provider requires the proxy
       let proxyRequiredReason: string | null = null;
-      if (!routingReady && providerNeedsRouting(activeApp, provider)) {
+      if (!isProxyRunning && provider.category !== "official") {
         if (isCopilotProvider) {
           proxyRequiredReason = t("notifications.proxyReasonCopilot", {
             defaultValue: "使用 GitHub Copilot 作为 Claude 供应商",
-          });
-        } else if (isOAuthProviderType(provider.meta?.providerType)) {
-          // 托管 OAuth（codex_oauth / xai_oauth 等）：凭据由本地代理注入，
-          // 是否需路由由 providerType 权威决定，不看 apiFormat（后端亦无视，
-          // 见 forwarder.rs）——避免 codex_oauth 被改成 anthropic / 旧数据缺省
-          // apiFormat 时漏判。Claude 下的 Copilot 保留上面的专属文案。
-          proxyRequiredReason = t("notifications.proxyReasonManagedOAuth", {
-            defaultValue: "使用托管 OAuth 登录（令牌由本地路由注入）",
           });
         } else if (
           provider.meta?.apiFormat === "openai_chat" &&
@@ -225,13 +191,6 @@ export function useProviderActions(
           proxyRequiredReason = t("notifications.proxyReasonOpenAIChat", {
             defaultValue: "使用 OpenAI Chat 接口格式",
           });
-        } else if (isCodexAnthropicFormat) {
-          proxyRequiredReason = t(
-            "notifications.proxyReasonAnthropicMessages",
-            {
-              defaultValue: "使用 Anthropic Messages 接口格式",
-            },
-          );
         } else if (
           activeApp === "claude-desktop" &&
           provider.meta?.claudeDesktopMode === "proxy"
@@ -241,16 +200,10 @@ export function useProviderActions(
           });
         } else if (
           provider.meta?.isFullUrl &&
-          (activeApp === "claude" ||
-            activeApp === "codex" ||
-            activeApp === "grokbuild")
+          (activeApp === "claude" || activeApp === "codex")
         ) {
           proxyRequiredReason = t("notifications.proxyReasonFullUrl", {
             defaultValue: "开启了完整 URL 连接模式",
-          });
-        } else {
-          proxyRequiredReason = t("notifications.proxyReasonRoutingRequired", {
-            defaultValue: "需要本地路由处理请求",
           });
         }
       }
@@ -265,17 +218,8 @@ export function useProviderActions(
         );
       }
 
-      // The built-in Codex official provider can reuse Codex's native ChatGPT
-      // login through local routing. Other official providers remain blocked.
-      const officialSupportsTakeover = supportsOfficialProxyTakeover(
-        activeApp,
-        provider,
-      );
-      if (
-        isProxyTakeover &&
-        provider.category === "official" &&
-        !officialSupportsTakeover
-      ) {
+      // Block official providers when proxy takeover is active
+      if (isProxyTakeover && provider.category === "official") {
         toast.error(
           t("notifications.officialBlockedByProxy", {
             defaultValue:
@@ -308,9 +252,6 @@ export function useProviderActions(
           if (activeApp === "codex") {
             messageKey = "notifications.codexRestartRequired";
             defaultMessage = "切换成功，请重启客户端以生效";
-          } else if (activeApp === "grokbuild") {
-            messageKey = "notifications.grokBuildRestartRequired";
-            defaultMessage = "切换成功，请重启 Grok Build 以生效";
           } else if (activeApp === "claude-desktop") {
             if (provider.meta?.claudeDesktopMode === "proxy") {
               messageKey = "notifications.claudeDesktopProxyRestartRequired";

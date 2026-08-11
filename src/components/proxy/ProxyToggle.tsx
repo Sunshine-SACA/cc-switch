@@ -39,9 +39,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
         ? "Codex"
         : activeApp === "gemini"
           ? "Gemini"
-          : activeApp === "grokbuild"
-            ? "Grok Build"
-            : "OpenCode";
+          : "OpenCode";
 
   const tooltipText = takeoverEnabled
     ? isRunning
@@ -75,7 +73,7 @@ export function ProxyToggle({ className, activeApp }: ProxyToggleProps) {
           className={cn(
             "h-4 w-4 transition-colors",
             takeoverEnabled
-              ? "text-emerald-500 status-heartbeat"
+              ? "text-emerald-500 animate-pulse"
               : "text-muted-foreground",
           )}
         />
