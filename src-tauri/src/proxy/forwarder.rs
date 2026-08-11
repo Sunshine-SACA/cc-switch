@@ -1915,6 +1915,15 @@ impl RequestForwarder {
             } else if !self.non_streaming_timeout.is_zero() {
                 request = request.timeout(self.non_streaming_timeout);
             }
+            // openai_responses 格式的上游（如 cli-proxy-api）对流式响应返回
+            // `Connection: close`。reqwest 连接池会把该连接放回池复用，但上游已关闭，
+            // 复用时报空流 → priming 判定 `stream ended` → 502。这里显式声明连接复用
+            // 关闭，强制每次请求新建连接，避免复用到半关闭连接。（FWD-004 fix）
+            if request_is_streaming
+                && matches!(resolved_claude_api_format.as_deref(), Some("openai_responses"))
+            {
+                request = request.header("Connection", "close");
+            }
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
             }
