@@ -171,6 +171,9 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         // 会丢弃所有 content_block_start/stop，导致 Claude Code 收到悬空的 thinking 块永不关闭。
         let mut passthrough_anthropic = false;
         let mut passthrough_emitted_message_start = false;
+        // 空thinking过滤：缓存最近一次 content_block_start(thinking)，若后一个事件是
+        // content_block_stop（中间无 thinking_delta），则丢弃这对事件，抑制空thinking碎块
+        let mut pending_empty_thinking_start: Option<String> = None;
         let mut current_non_tool_block_type: Option<&'static str> = None;
         let mut current_non_tool_block_index: Option<u32> = None;
         let mut tool_blocks_by_index: HashMap<usize, ToolBlockState> = HashMap::new();
@@ -192,6 +195,8 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                             if let Some(data) = strip_sse_field(l, "data") {
                                 if data.trim() == "[DONE]" {
                                     log::debug!("[Claude/OpenRouter] <<< OpenAI SSE: [DONE]");
+                                    // 流结束：丢弃未决的空 thinking start（无尾随 stop 的空块不输出）
+                                    pending_empty_thinking_start = None;
 
                                     // 流正常结束，发出缓存的 message_delta（含完整 usage）。
                                     if let Some((stop_reason, usage_json)) = pending_message_delta.take() {
@@ -230,7 +235,38 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                 }
 
                                 if passthrough_anthropic {
-                                    // 透传：原样下发原始 SSE 行，保证 content_block_start/stop 配对完整
+                                    // 透传：原样下发原始 SSE 行，保证 content_block_start/stop 配对完整。
+                                    // 空 thinking 过滤：若上一个事件被标记为"空 thinking 块 start"、
+                                    // 当前事件紧跟 content_block_stop（中间无 thinking_delta），则丢弃这对事件。
+                                    if let Some(pending_start) = pending_empty_thinking_start.take() {
+                                        let current_is_stop = data.contains("\"type\":\"content_block_stop\"");
+                                        if current_is_stop {
+                                            // 空 start + 紧跟的 stop（中间无 delta）→ 丢弃这对事件
+                                            log::debug!("[Claude/OpenRouter] >>> 过滤空thinking块 (start+stop无delta)");
+                                            continue;
+                                        }
+                                        // 当前不是 stop（是 thinking_delta 等）→ 空 start 实为正常块开头，先输出缓存的 start
+                                        let pending_sse = format!("data: {}\n\n", pending_start);
+                                        if !passthrough_emitted_message_start {
+                                            log::debug!("[Claude/OpenRouter] >>> Anthropic SSE(passthrough): {}", pending_sse.split(',').next().unwrap_or(""));
+                                            passthrough_emitted_message_start = true;
+                                        }
+                                        yield Ok(Bytes::from(pending_sse));
+                                    }
+
+                                    // 检测当前是否为"空 thinking 块 start"：type=thinking 且 thinking 为空字符串。
+                                    // 采用宽松匹配（thinking:" " 含空字符串），避免误判有内容块。
+                                    let is_empty_thinking_start = data.contains("\"type\":\"content_block_start\"")
+                                        && data.contains("\"type\":\"thinking\"")
+                                        && (data.contains("\"thinking\":\"\"") || data.contains("\"thinking\": \"\""));
+                                    if is_empty_thinking_start {
+                                        // 缓存空 start，等待下一个事件决定去留：
+                                        // - 下个事件若是 stop → 放弃了（空块）
+                                        // - 下个事件若是非 stop → 正常块开头，先输出缓存的 start
+                                        pending_empty_thinking_start = Some(data.to_string());
+                                        continue;
+                                    }
+
                                     let sse_data = format!("data: {}\n\n", data);
                                     if !passthrough_emitted_message_start {
                                         log::debug!("[Claude/OpenRouter] >>> Anthropic SSE(passthrough): {}", data.split(',').next().unwrap_or(""));

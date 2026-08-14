@@ -678,17 +678,25 @@ fn is_empty_thinking_event(data: &str) -> bool {
     if let Ok(json) = serde_json::from_str::<Value>(data) {
         let event_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match event_type {
-            // 注意：content_block_start(thinking="") 是 Anthropic 协议的正常块起始事件，
-            // thinking 字段初始为空、后续由 thinking_delta 填充。
-            // 之前误把这种 start 当作"空 thinking 碎块"过滤，会导致 Claude Code
-            // 收到 thinking_delta 却没有对应 content_block_start，整个 thought 块丢失。
-            // 因此 content_block_start 一律不过滤，空 thinking 块由"start 后紧跟 stop
-            // 且中间无 delta"的状态机逻辑在 create_logged_passthrough_stream 中精准处理。
-            "content_block_start" => false,
+            // 空 thinking 块起始：type="thinking" 且 thinking 字段为空（或不存在），
+            // 且没有 signature（有 signature 的 redacted thinking 块非空）。
+            // 状态机通过"start 后紧跟 stop 且中间无 delta"精准过滤——不误伤有内容 thinking 块。
+            "content_block_start" => {
+                json.pointer("/content_block/type").and_then(|v| v.as_str()) == Some("thinking")
+                    && json
+                        .pointer("/content_block/thinking")
+                        .and_then(|v| v.as_str())
+                        .map(|t| t.is_empty())
+                        .unwrap_or(true)
+                    && json
+                        .pointer("/content_block/signature")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.is_empty())
+                        .unwrap_or(true)
+            }
             "content_block_delta" => {
                 // 空 thinking_delta（thinking=""）本身无害，Claude Code 收到即为无操作；
-                // 而过滤它反而可能打乱 thinking 块的 start/delta/stop 结构。
-                // 因此空 thinking_delta 一律放行，由 Claude Code 自行处理。
+                // 过滤它反而可能打乱 thinking 块的 start/delta/stop 结构，一律放行。
                 false
             }
             _ => false,
@@ -696,6 +704,47 @@ fn is_empty_thinking_event(data: &str) -> bool {
     } else {
         false
     }
+}
+
+/// 截断 Responses API 类事件（response.created/in_progress/completed/succeeded/failed）
+/// 中的超大字段，防止盲传上游回显的完整 instructions（Claude Code 系统提示可达数
+/// 百 KB）导致下游 SSE JSON 解析失败（422 invalid SSE data JSON）。
+///
+/// 只裁剪：instructions（顶层字符串）、response.instructions（response 对象内）、
+/// response.input（response 对象内的对话历史）。保留其余字段以保证客户端所需的
+/// id/status/model/output/usage 等信息完整。若 JSON 解析失败则原样返回。
+fn trim_oversized_responses_fields(data: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(data) else {
+        return data.to_string();
+    };
+    let Some(event_type) = value.get("type").and_then(|v| v.as_str()) else {
+        return data.to_string();
+    };
+    // 只有 Responses API 类事件才裁剪；Anthropic 格式事件（message_start 等）不动。
+    let is_responses_event = event_type == "response.created"
+        || event_type == "response.in_progress"
+        || event_type == "response.completed"
+        || event_type == "response.succeeded"
+        || event_type == "response.failed"
+        || event_type == "response.incomplete"
+        || event_type == "response.queued"
+        || event_type == "response.output_item.done"
+        || event_type == "response.output_item.added";
+    if !is_responses_event {
+        return data.to_string();
+    }
+    // 顶层 instructions 字段：直接裁剪（如部分网关在 response.created 顶层携带）。
+    if value.get("instructions").is_some() {
+        if let Some(obj) = value.as_object_mut() {
+            obj.remove("instructions");
+        }
+    }
+    // response 对象内的 instructions / input：对话历史回显，体积巨大且下游无需。
+    if let Some(resp) = value.get_mut("response").and_then(|v| v.as_object_mut()) {
+        resp.remove("instructions");
+        resp.remove("input");
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| data.to_string())
 }
 
 /// 创建带日志记录、超时控制和空thinking块过滤的透传流
@@ -714,8 +763,10 @@ pub fn create_logged_passthrough_stream(
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
         let debug_enabled = log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
-        // 空thinking过滤状态：跟踪是否正在跳过空的thinking块
-        let mut skipping_empty_thinking = false;
+        // 空thinking过滤：缓存最近一次 content_block_start(thinking)，若后一个事件是
+        // content_block_stop（中间无 thinking_delta），则丢弃这对事件，抑制空thinking碎块。
+        // 若后续是 thinking_delta，则是正常块开头，先输出缓存的 start 再处理 delta。
+        let mut pending_empty_thinking_start: Option<String> = None;
 
         // 超时配置
         let first_byte_timeout = if timeout_config.first_byte_timeout > 0 {
@@ -767,9 +818,9 @@ pub fn create_logged_passthrough_stream(
                     // 始终进行SSE解析，不再仅用于debug
                     crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
-                    // 安全阀：若buffer超过128KB仍未提取到SSE块，说明非SSE响应（如错误JSON），
+                    // 安全阀：若buffer超过1MB仍未提取到SSE块，说明非SSE响应（如错误JSON），
                     // 直接透传原始buffer内容，防止内存泄漏
-                    const MAX_SSE_BUFFER: usize = 128 * 1024;
+                    const MAX_SSE_BUFFER: usize = 1024 * 1024;
                     if buffer.len() > MAX_SSE_BUFFER {
                         log::warn!(
                             "[{tag}] SSE buffer超过{}KB仍未收到完整事件，作为非SSE响应透传",
@@ -787,6 +838,8 @@ pub fn create_logged_passthrough_stream(
                         }
 
                         let mut should_yield = true;
+                        // 裁剪 Responses API 类事件中的超大回显字段（instructions/input）
+                        let mut trimmed_data: Option<String> = None;
 
                         // 检查每个data行是否为空的thinking事件
                         for line in event_text.lines() {
@@ -796,29 +849,39 @@ pub fn create_logged_passthrough_stream(
                                         log::debug!("[{tag}] <<< SSE: [DONE]");
                                     }
                                     should_yield = true;
-                                    skipping_empty_thinking = false;
+                                    pending_empty_thinking_start = None;
                                     break;
                                 }
 
+                                // 裁剪超大回显字段，避免下游 SSE JSON 解析失败
+                                let trimmed = trim_oversized_responses_fields(data);
+                                if trimmed != data {
+                                    trimmed_data = Some(trimmed);
+                                }
+
+                                // 空thinking对过滤：缓存 start，紧跟 stop 则丢弃，有 delta 则放行
                                 if is_empty_thinking_event(data) {
-                                    // 遇到空thinking事件：标记跳过状态
-                                    skipping_empty_thinking = true;
+                                    pending_empty_thinking_start = Some(data.to_string());
                                     should_yield = false;
                                     if debug_enabled {
-                                        log::debug!("[{tag}] [FILTER] 过滤空thinking事件: {data}");
+                                        log::debug!("[{tag}] [FILTER] 缓存空thinking start: {data}");
                                     }
-                                } else if skipping_empty_thinking
-                                    && data.contains("\"type\":\"content_block_stop\"")
-                                {
-                                    // 紧跟空thinking的content_block_stop也跳过
-                                    skipping_empty_thinking = false;
-                                    should_yield = false;
-                                    if debug_enabled {
-                                        log::debug!("[{tag}] [FILTER] 过滤空thinking的stop事件");
+                                } else if let Some(pending) = pending_empty_thinking_start.take() {
+                                    let current_is_stop = data.contains("\"type\":\"content_block_stop\"");
+                                    if current_is_stop {
+                                        should_yield = false;
+                                        if debug_enabled {
+                                            log::debug!("[{tag}] [FILTER] 过滤空thinking块 (start+stop无delta)");
+                                        }
+                                    } else {
+                                        // 当前是 delta/text 等 → 先输出缓存的空start，再输出当前事件
+                                        let pending_sse = format!("data: {}\n\n", pending);
+                                        yield Ok(Bytes::from(pending_sse));
+                                        if debug_enabled {
+                                            log::debug!("[{tag}] [FILTER] 空start实为正常块开头，先输出缓存的start");
+                                        }
                                     }
                                 } else {
-                                    // 正常事件：结束跳过状态
-                                    skipping_empty_thinking = false;
                                     should_yield = true;
 
                                     // usage收集和debug日志（原逻辑）
@@ -847,9 +910,25 @@ pub fn create_logged_passthrough_stream(
                         }
 
                         if should_yield {
-                            // 重建SSE块并输出
-                            let mut block_bytes = event_text.into_bytes();
-                            block_bytes.extend_from_slice(b"\n\n");
+                            // 重建SSE块并输出（若裁剪过则替换data行）
+                            let block_bytes = if let Some(trimmed) = trimmed_data {
+                                let mut out = Vec::new();
+                                for l in event_text.lines() {
+                                    if strip_sse_field(l, "data").is_some() {
+                                        out.extend_from_slice(b"data: ");
+                                        out.extend_from_slice(trimmed.as_bytes());
+                                    } else {
+                                        out.extend_from_slice(l.as_bytes());
+                                    }
+                                    out.extend_from_slice(b"\n");
+                                }
+                                out.extend_from_slice(b"\n");
+                                out
+                            } else {
+                                let mut block_bytes = event_text.into_bytes();
+                                block_bytes.extend_from_slice(b"\n\n");
+                                block_bytes
+                            };
                             yield Ok(Bytes::from(block_bytes));
                         }
                     }
@@ -1277,8 +1356,8 @@ mod tests {
     fn test_empty_thinking_block_start() {
         let data = r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#;
         assert!(
-            !is_empty_thinking_event(data),
-            "空的thinking content_block_start是Anthropic协议正常块起始，不应被过滤（否则thinking_delta成孤儿，thought块丢失）"
+            is_empty_thinking_event(data),
+            "空thinking content_block_start(thinking=\"\") 应被标记为空，由状态机处理（后续 stop→丢弃，delta→先输出缓存start）"
         );
     }
 
