@@ -17,8 +17,8 @@
     },
     {
       "type": "fix",
-      "zh": "保留：Gemini 无 type schema 修复与空 thinking 碎块过滤",
-      "zh-TW": "保留：Gemini 無 type schema 修復與空 thinking 碎塊過濾",
+      "zh": "保留：Gemini 无 type schema 修复与空 thinking 过滤",
+      "zh-TW": "保留：Gemini 無 type schema 修復與空 thinking 過濾",
       "en": "Kept fixes: Gemini type-less schema handling; empty thinking filtering",
       "ja": "維持：Gemini type なし schema 修正と空 thinking フィルタ"
     }
