@@ -3,24 +3,24 @@
   "items": [
     {
       "type": "improve",
-      "zh": "同步上游 v4.0.4（GitHub Copilot 托管账号、多网关兼容与用量统计修复）",
-      "zh-TW": "同步上游 v4.0.4（GitHub Copilot 託管帳號、多閘道相容與用量統計修復）",
-      "en": "Synced upstream v4.0.4 (GitHub Copilot managed accounts, broader gateway compatibility, usage-tracking fixes)",
-      "ja": "上游 v4.0.4 に同期（GitHub Copilot マネージドアカウント、ゲートウェイ互換性と使用量統計の修正）"
+      "zh": "同步上游 v4.0.4：Copilot 托管账号、网关兼容与用量统计修复",
+      "zh-TW": "同步上游 v4.0.4：Copilot 託管帳號、閘道相容與用量統計修復",
+      "en": "Synced upstream v4.0.4: Copilot managed accounts, gateway compat, usage fixes",
+      "ja": "上游 v4.0.4 に同期：Copilot マネージドアカウント等の修正"
     },
     {
       "type": "fix",
-      "zh": "统计回归：疑似导致部分会话显示成功但 0 token 的 fork 改动已移除，恢复上游透传逻辑",
-      "zh-TW": "統計回歸：疑為導致部分會話顯示成功但 0 token 的 fork 改動已移除，恢復上游透傳邏輯",
-      "en": "Removed fork patches suspected of causing sessions to show success with 0 tokens; upstream passthrough logic restored",
-      "ja": "成功表示なのに 0 token になる fork パッチを削除し、上游のパススルー処理に戻しました"
+      "zh": "移除疑似导致会话成功但 0 token 的旧改动，恢复上游逻辑",
+      "zh-TW": "移除疑似導致會話成功但 0 token 的舊改動，恢復上游邏輯",
+      "en": "Removed old patches tied to 0-token sessions; upstream logic restored",
+      "ja": "0 token になる旧パッチを削除し上游ロジックに戻しました"
     },
     {
       "type": "fix",
-      "zh": "保留修复：Gemini 嵌套无 type 工具 schema 改走 parametersJsonSchema；空 thinking 碎块过滤",
-      "zh-TW": "保留修復：Gemini 巢狀無 type 工具 schema 改走 parametersJsonSchema；空 thinking 碎塊過濾",
-      "en": "Kept fixes: Gemini nested type-less tool schemas now use parametersJsonSchema; empty thinking-block filtering",
-      "ja": "維持した修正：Gemini の type なしツール schema を parametersJsonSchema に切替、空 thinking ブロックのフィルタ"
+      "zh": "保留：Gemini 无 type schema 修复与空 thinking 碎块过滤",
+      "zh-TW": "保留：Gemini 無 type schema 修復與空 thinking 碎塊過濾",
+      "en": "Kept fixes: Gemini type-less schema handling; empty thinking filtering",
+      "ja": "維持：Gemini type なし schema 修正と空 thinking フィルタ"
     }
   ]
 }
