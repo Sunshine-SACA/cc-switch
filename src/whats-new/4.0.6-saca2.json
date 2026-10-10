@@ -1,0 +1,12 @@
+{
+  "version": "4.0.6-saca2",
+  "items": [
+    {
+      "type": "fix",
+      "zh": "修复 Claude Code 报 redacted_thinking 类型错误",
+      "zh-TW": "修復 Claude Code 報 redacted_thinking 類型錯誤",
+      "en": "Fix Claude Code failing with \"Unsupported content type: redacted_thinking\" on encrypted reasoning",
+      "ja": "暗号化推論で redacted_thinking 型を拒否される問題を修正"
+    }
+  ]
+}
