@@ -1,0 +1,26 @@
+{
+  "version": "4.0.6-saca1",
+  "items": [
+    {
+      "type": "improve",
+      "zh": "同步上游 v4.0.6：模型目录、配额显示与聚合模式修复",
+      "zh-TW": "同步上游 v4.0.6：模型目錄、配額顯示與聚合模式修復",
+      "en": "Synced upstream v4.0.6: model catalog, quota display, aggregation fixes",
+      "ja": "上游 v4.0.6 に同期：モデルカタログ等の修正"
+    },
+    {
+      "type": "fix",
+      "zh": "Anthropic SSE 终止事件前闭合未关内容块，修复流截断",
+      "zh-TW": "Anthropic SSE 終止事件前閉合未關內容塊，修復流截斷",
+      "en": "Open content blocks now close before terminal Anthropic SSE events",
+      "ja": "Anthropic SSE 終端イベント前に未閉ブロックを閉じる修正"
+    },
+    {
+      "type": "fix",
+      "zh": "子代理任务不可读时给出说明而非清空内容",
+      "zh-TW": "子代理任務不可讀時給出說明而非清空內容",
+      "en": "Unreadable sub-agent tasks now show an explanation instead of emptying",
+      "ja": "読めないサブエージェント課題を空にせず説明表示"
+    }
+  ]
+}
