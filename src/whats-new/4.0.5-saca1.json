@@ -1,0 +1,26 @@
+{
+  "version": "4.0.5-saca1",
+  "items": [
+    {
+      "type": "improve",
+      "zh": "同步上游 v4.0.5：Copilot 账号、网关兼容与用量统计修复",
+      "zh-TW": "同步上游 v4.0.5：Copilot 帳號、閘道相容與用量統計修復",
+      "en": "Synced upstream v4.0.5: Copilot accounts, gateway compat, usage fixes",
+      "ja": "上游 v4.0.5 に同期：Copilot アカウント等の修正"
+    },
+    {
+      "type": "fix",
+      "zh": "移除疑似导致会话成功但 0 token 的旧改动，恢复上游逻辑",
+      "zh-TW": "移除疑似導致會話成功但 0 token 的舊改動，恢復上游邏輯",
+      "en": "Removed old patches tied to 0-token sessions; upstream logic restored",
+      "ja": "0 token になる旧パッチを削除し上游ロジックに戻しました"
+    },
+    {
+      "type": "fix",
+      "zh": "保留：Gemini 无 type schema 修复与空 thinking 过滤",
+      "zh-TW": "保留：Gemini 無 type schema 修復與空 thinking 過濾",
+      "en": "Kept fixes: Gemini type-less schema handling; empty thinking filtering",
+      "ja": "維持：Gemini type なし schema 修正と空 thinking フィルタ"
+    }
+  ]
+}
