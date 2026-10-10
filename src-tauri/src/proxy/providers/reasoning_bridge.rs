@@ -82,12 +82,10 @@ pub(crate) fn anthropic_block_from_openai_reasoning_item(item: &Value) -> Option
 
     if has_encrypted_content {
         let envelope = encode_openai_reasoning_item(item)?;
-        if text.is_empty() {
-            return Some(json!({
-                "type": "redacted_thinking",
-                "data": envelope
-            }));
-        }
+        // fork 修复：空 summary 时不再发 redacted_thinking（Claude Code 报
+        // "Unsupported content type: redacted_thinking"，上游 issue #5362/#5682，
+        // MangataYu PR #1 的修法）；改发标准空 thinking + signature 承载信封。
+        // 旧 redacted_thinking.data 历史输入在 openai_reasoning_item_from_anthropic_block 仍接受。
         return Some(json!({
             "type": "thinking",
             "thinking": text,
@@ -138,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_item_without_summary_uses_redacted_thinking() {
+    fn encrypted_item_without_summary_uses_empty_thinking_signature() {
         let item = json!({
             "id": "rs_2",
             "type": "reasoning",
@@ -146,9 +144,34 @@ mod tests {
             "encrypted_content": "opaque"
         });
         let block = anthropic_block_from_openai_reasoning_item(&item).unwrap();
-        assert_eq!(block["type"], "redacted_thinking");
+        // fork 修复：不再发 redacted_thinking（Claude Code 不识别），改发空 thinking + signature
+        assert_eq!(block["type"], "thinking");
+        assert_eq!(block["thinking"], "");
+        assert!(
+            block["signature"]
+                .as_str()
+                .is_some_and(|value| value.starts_with(OPENAI_REASONING_ITEM_PREFIX))
+        );
         assert_eq!(
             openai_reasoning_item_from_anthropic_block(&block),
+            Some(item)
+        );
+    }
+
+    #[test]
+    fn legacy_redacted_thinking_input_still_decodes() {
+        let item = json!({
+            "id": "rs_legacy",
+            "type": "reasoning",
+            "summary": [],
+            "encrypted_content": "opaque"
+        });
+        let envelope = encode_openai_reasoning_item(&item).unwrap();
+        assert_eq!(
+            openai_reasoning_item_from_anthropic_block(&json!({
+                "type": "redacted_thinking",
+                "data": envelope
+            })),
             Some(item)
         );
     }
