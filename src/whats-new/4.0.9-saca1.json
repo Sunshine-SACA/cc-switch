@@ -1,0 +1,19 @@
+{
+  "version": "4.0.9-saca1",
+  "items": [
+    {
+      "type": "improve",
+      "zh": "同步上游 v4.0.7–v4.0.9：会话压缩、模型选择器与多项修复",
+      "zh-TW": "同步上游 v4.0.7–v4.0.9：會話壓縮、模型選擇器與多項修復",
+      "en": "Synced upstream v4.0.7-v4.0.9: session compression, model picker, and many fixes",
+      "ja": "上游 v4.0.7–v4.0.9 に同期：セッション圧縮等の修正"
+    },
+    {
+      "type": "fix",
+      "zh": "保留 fork 修复：redacted_thinking 类型错误",
+      "zh-TW": "保留 fork 修復：redacted_thinking 類型錯誤",
+      "en": "Kept the fork fix for Claude Code's \"Unsupported content type: redacted_thinking\" error",
+      "ja": "redacted_thinking 型エラーの fork 修正を維持"
+    }
+  ]
+}
