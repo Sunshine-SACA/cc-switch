@@ -3,24 +3,24 @@
   "items": [
     {
       "type": "improve",
-      "zh": "同步上游 v4.0.10–v4.0.14：本地推理预设（Ollama/llama.cpp/vLLM/LM Studio）、用量统计自定义、Claude Desktop 聚合模式",
-      "zh-TW": "同步上游 v4.0.10–v4.0.14：本地推理預設（Ollama/llama.cpp/vLLM/LM Studio）、用量統計自訂、Claude Desktop 聚合模式",
-      "en": "Synced upstream v4.0.10-v4.0.14: local inference presets, usage customization, Claude Desktop aggregation mode",
-      "ja": "上游 v4.0.10–v4.0.14 に同期：ローカル推論プリセット等"
+      "zh": "同步上游 v4.0.10–v4.0.14：本地推理预设等大量更新",
+      "zh-TW": "同步上游 v4.0.10–v4.0.14：本地推理預設等大量更新",
+      "en": "Synced upstream v4.0.10-v4.0.14: local inference presets and more",
+      "ja": "上游 v4.0.10–v4.0.14 に同期"
     },
     {
       "type": "fix",
-      "zh": "流式转换对齐上游：[DONE] 后不再处理迟到事件，防止已终止的流被迟到增量或错误重开",
-      "zh-TW": "串流轉換對齊上游：[DONE] 後不再處理遲到事件，防止已終止的串流被遲到增量或錯誤重開",
-      "en": "Streaming conversion now stops at [DONE]: late events can no longer reopen a finished stream",
-      "ja": "[DONE] 後の遅延イベントを破棄し、終了済みストリームの再オープンを防止"
+      "zh": "流式转换对齐上游：[DONE] 后不再处理迟到事件",
+      "zh-TW": "串流轉換對齊上游：[DONE] 後不再處理遲到事件",
+      "en": "Streaming now stops at [DONE]: late events cannot reopen a finished stream",
+      "ja": "[DONE] 後の遅延イベントを破棄"
     },
     {
       "type": "fix",
-      "zh": "保留 fork 修复：Anthropic 透传检测、空 thinking 块过滤、Gemini 嵌套 schema",
-      "zh-TW": "保留 fork 修復：Anthropic 透傳檢測、空 thinking 塊過濾、Gemini 巢狀 schema",
-      "en": "Kept fork fixes: Anthropic passthrough detection, empty thinking block filtering, Gemini nested schema",
-      "ja": "fork 修正を維持：Anthropic パススルー検出、空 thinking ブロックの除去、Gemini ネスト schema"
+      "zh": "保留 fork 修复：透传检测、空 thinking 过滤等",
+      "zh-TW": "保留 fork 修復：透傳檢測、空 thinking 過濾等",
+      "en": "Kept fork fixes: passthrough detection, empty thinking filtering",
+      "ja": "fork 修正を維持"
     }
   ]
 }
