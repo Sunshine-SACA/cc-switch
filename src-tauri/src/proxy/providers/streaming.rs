@@ -327,7 +327,6 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         // 2) pending_message_delta: 缓存延迟到 [DONE] 发送，确保 usage 完整
         let mut has_emitted_message_delta = false;
         let mut pending_message_delta: Option<(Option<String>, Option<Value>)> = None;
-        let mut has_sent_message_stop = false;
         let mut stream_ended_with_error = false;
         let mut latest_usage: Option<Value> = None;
         // 修复：检测上游是否已经是 Anthropic 格式（如 bzboy 中转把 OpenAI 转成了 Anthropic）。
@@ -362,9 +361,6 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                     log::debug!("[Claude/OpenRouter] <<< OpenAI SSE: [DONE]");
                                     // 流结束：丢弃未决的空 thinking start（无尾随 stop 的空块不输出）
                                     pending_empty_thinking_start = None;
-                                    if has_sent_message_stop {
-                                        continue;
-                                    }
 
                                     // DeepSeek 可能在最后一个有效 finish_reason 前发送空值；只有真实结束时才发送终止事件。
                                     let inferred_stop_reason = if pending_message_delta.is_none()
@@ -454,15 +450,13 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                         yield Ok(Bytes::from(sse_data));
                                     }
 
-                                    if !has_sent_message_stop {
-                                        let event = json!({"type": "message_stop"});
-                                        let sse_data = format!("event: message_stop\ndata: {}\n\n",
-                                            serde_json::to_string(&event).unwrap_or_default());
-                                        log::debug!("[Claude/OpenRouter] >>> Anthropic SSE: message_stop");
-                                        yield Ok(Bytes::from(sse_data));
-                                        has_sent_message_stop = true;
-                                    }
-                                    continue;
+                                    let event = json!({"type": "message_stop"});
+                                    let sse_data = format!("event: message_stop\ndata: {}\n\n",
+                                        serde_json::to_string(&event).unwrap_or_default());
+                                    log::debug!("[Claude/OpenRouter] >>> Anthropic SSE: message_stop");
+                                    yield Ok(Bytes::from(sse_data));
+                                    // [DONE] is terminal; do not read or emit anything after message_stop.
+                                    return;
                                 }
 
                                 // 修复：检测上游是否已经是 Anthropic 格式。
@@ -1020,7 +1014,7 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                 false
             };
 
-            if emitted_pending_message_delta && !has_sent_message_stop {
+            if emitted_pending_message_delta {
                 let event = json!({"type": "message_stop"});
                 let sse_data = format!("event: message_stop\ndata: {}\n\n",
                     serde_json::to_string(&event).unwrap_or_default());
@@ -2450,5 +2444,72 @@ mod tests {
             block_boundaries(&events),
             vec!["start:0:tool_use".to_string(), "stop:0".to_string()]
         );
+    }
+
+    async fn terminal_boundary_output(prefix: String, tail: Option<&str>) -> String {
+        let mut chunks = vec![Ok(Bytes::from(prefix))];
+        match tail {
+            Some("transport") => chunks.push(Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "late reset",
+            ))),
+            Some(data) => chunks.push(Ok(Bytes::from(data.to_owned()))),
+            None => {}
+        }
+        create_anthropic_sse_stream(futures::stream::iter(chunks))
+            .map(|chunk| String::from_utf8(chunk.unwrap().to_vec()).unwrap())
+            .collect::<Vec<_>>()
+            .await
+            .concat()
+    }
+
+    #[tokio::test]
+    async fn done_preserves_terminal_result_against_late_input() {
+        for reason in ["stop", "length"] {
+            let prefix = format!(
+                "data: {{\"id\":\"fixed\",\"model\":\"test\",\"choices\":[{{\"delta\":{{\"content\":\"visible\"}},\"finish_reason\":\"{reason}\"}}]}}\n\n\
+                 data: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":7,\"completion_tokens\":11}}}}\n\n\
+                 data: [DONE]\n\n"
+            );
+            let expected = terminal_boundary_output(prefix.clone(), None).await;
+            assert_eq!(expected.matches("event: message_stop\n").count(), 1);
+            assert!(expected.contains("\"output_tokens\":11"));
+            assert!(expected.contains("\"input_tokens\":7"));
+            for tail in [
+                "transport",
+                "data: [DONE]\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\n",
+                "event: error\ndata: {\"error\":{\"message\":\"late error\"}}\n\n",
+            ] {
+                let actual = terminal_boundary_output(prefix.clone(), Some(tail)).await;
+                assert_eq!(actual, expected, "{reason}, {tail}");
+                if tail != "transport" {
+                    let actual = terminal_boundary_output(format!("{prefix}{tail}"), None).await;
+                    assert_eq!(actual, expected, "same chunk: {reason}, {tail}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_reason_without_done_still_reports_transport_error() {
+        let prefix = "data: {\"id\":\"fixed\",\"choices\":[{\"delta\":{\"content\":\"visible\"},\"finish_reason\":\"stop\"}]}\n\n";
+        let actual = terminal_boundary_output(prefix.to_owned(), Some("transport")).await;
+        assert_eq!(actual.matches("event: error\n").count(), 1);
+        assert!(!actual.contains("event: message_stop\n"));
+    }
+
+    #[tokio::test]
+    async fn done_closes_without_waiting_for_upstream_eof() {
+        let upstream = futures::stream::once(async {
+            Ok::<_, std::io::Error>(Bytes::from_static(b"data: [DONE]\n\n"))
+        })
+        .chain(futures::stream::pending());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            create_anthropic_sse_stream(upstream).collect::<Vec<_>>(),
+        )
+        .await
+        .expect("a terminal response must not await another upstream chunk");
     }
 }
