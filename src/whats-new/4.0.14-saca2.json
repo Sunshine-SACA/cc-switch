@@ -1,0 +1,19 @@
+{
+  "version": "4.0.14-saca2",
+  "items": [
+    {
+      "type": "fix",
+      "zh": "削减流式响应中的超大回显字段，缓解 GPT 断流",
+      "zh-TW": "削減串流回應中的超大回顯欄位，緩解 GPT 斷流",
+      "en": "Trim oversized echo fields in streaming responses to mitigate GPT stream drops",
+      "ja": "ストリーミング応答の巨大エコー欄位を削減し、GPT の切断を緩和"
+    },
+    {
+      "type": "fix",
+      "zh": "Codex 流式请求强制新建连接，避免复用半关闭连接",
+      "zh-TW": "Codex 串流請求強制新建連線，避免複用半關閉連線",
+      "en": "Codex streaming requests now open a fresh connection instead of reusing half-closed ones",
+      "ja": "Codex ストリーミング要求は新しい接続を強制し、半閉接続の再利用を回避"
+    }
+  ]
+}
