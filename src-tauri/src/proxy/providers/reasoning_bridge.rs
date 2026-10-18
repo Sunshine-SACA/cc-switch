@@ -147,11 +147,9 @@ mod tests {
         // fork 修复：不再发 redacted_thinking（Claude Code 不识别），改发空 thinking + signature
         assert_eq!(block["type"], "thinking");
         assert_eq!(block["thinking"], "");
-        assert!(
-            block["signature"]
-                .as_str()
-                .is_some_and(|value| value.starts_with(OPENAI_REASONING_ITEM_PREFIX))
-        );
+        assert!(block["signature"]
+            .as_str()
+            .is_some_and(|value| value.starts_with(OPENAI_REASONING_ITEM_PREFIX)));
         assert_eq!(
             openai_reasoning_item_from_anthropic_block(&block),
             Some(item)
