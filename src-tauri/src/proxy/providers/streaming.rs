@@ -359,8 +359,8 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                             if let Some(data) = strip_sse_field(l, "data") {
                                 if data.trim() == "[DONE]" {
                                     log::debug!("[Claude/OpenRouter] <<< OpenAI SSE: [DONE]");
-                                    // 流结束：丢弃未决的空 thinking start（无尾随 stop 的空块不输出）
-                                    pending_empty_thinking_start = None;
+                                    // 未决的空 thinking start 不需要显式清理：
+                                    // 本分支以 return 终止流，该缓存随之丢弃。
 
                                     // DeepSeek 可能在最后一个有效 finish_reason 前发送空值；只有真实结束时才发送终止事件。
                                     let inferred_stop_reason = if pending_message_delta.is_none()
