@@ -727,6 +727,54 @@ async fn log_usage_internal(
     }
 }
 
+/// 截断 Responses API 类事件（response.created/in_progress/completed/succeeded/failed 等）
+/// 中的超大回显字段，防止盲传上游回显的完整 instructions/input（系统提示可达数百 KB）
+/// 导致下游 SSE JSON 解析失败或客户端等大帧超时。usage / output 不动。
+fn trim_oversized_responses_fields(data: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(data) else {
+        return data.to_string();
+    };
+    let Some(event_type) = value.get("type").and_then(|v| v.as_str()) else {
+        return data.to_string();
+    };
+    let is_responses_event = event_type == "response.created"
+        || event_type == "response.in_progress"
+        || event_type == "response.completed"
+        || event_type == "response.succeeded"
+        || event_type == "response.failed"
+        || event_type == "response.incomplete"
+        || event_type == "response.queued"
+        || event_type == "response.output_item.done"
+        || event_type == "response.output_item.added";
+    if !is_responses_event {
+        return data.to_string();
+    }
+
+    let mut changed = false;
+    if let Some(obj) = value.as_object_mut() {
+        if obj.remove("instructions").is_some() {
+            changed = true;
+        }
+        if obj.remove("input").is_some() {
+            changed = true;
+        }
+    }
+    if let Some(resp) = value.get_mut("response") {
+        if let Some(obj) = resp.as_object_mut() {
+            if obj.remove("instructions").is_some() {
+                changed = true;
+            }
+            if obj.remove("input").is_some() {
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return data.to_string();
+    }
+    serde_json::to_string(&value).unwrap_or_else(|_| data.to_string())
+}
+
 /// 创建带日志记录和超时控制的透传流
 pub fn create_logged_passthrough_stream(
     stream: impl Stream<Item = Result<Bytes, std::io::Error>> + Send + 'static,
@@ -741,8 +789,6 @@ pub fn create_logged_passthrough_stream(
         let mut utf8_remainder: Vec<u8> = Vec::new();
         let mut collector = usage_collector;
         let mut finish_guard = collector.clone().map(SseUsageFinishGuard::new);
-        let inspect_sse_events =
-            collector.is_some() || log::log_enabled!(log::Level::Debug);
         let mut is_first_chunk = true;
 
         // 超时配置
@@ -793,48 +839,83 @@ pub fn create_logged_passthrough_stream(
                         );
                     }
                     is_first_chunk = false;
-                    if inspect_sse_events {
-                        crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
+                    crate::proxy::sse::append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
-                        // 尝试解析并记录完整的 SSE 事件
-                        while let Some(event_text) = take_sse_block(&mut buffer) {
-                            if !event_text.trim().is_empty() {
-                                let event_name = event_text
-                                    .lines()
-                                    .find_map(|line| strip_sse_field(line, "event"));
-                                // 提取 data 部分；只有 usage collector 存在时才解析 JSON。
-                                for line in event_text.lines() {
-                                    if let Some(data) = strip_sse_field(line, "data") {
-                                        if let Some(c) = &collector {
-                                            c.observe_data(event_name, data);
-                                        }
-                                        if data.trim() != "[DONE]" {
-                                            let collected = match &collector {
-                                                Some(c) if c.should_collect(data) => {
-                                                    match serde_json::from_str::<Value>(data) {
-                                                        Ok(json_value) => {
-                                                            c.push(json_value).await;
-                                                            true
-                                                        }
-                                                        Err(_) => false,
-                                                    }
-                                                }
-                                                _ => false,
-                                            };
-                                            log::trace!(
-                                                "[{tag}] <<< SSE data: bytes={}, usage_collected={collected} (content omitted)",
-                                                data.len()
-                                            );
-                                        } else {
-                                            log::debug!("[{tag}] <<< SSE: [DONE]");
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    // 安全阀：若 buffer 超过 1MB 仍未提取到 SSE 块，说明非 SSE 响应（如错误 JSON），
+                    // 直接透传原始 buffer，防止内存泄漏。
+                    const MAX_SSE_BUFFER: usize = 1024 * 1024;
+                    if buffer.len() > MAX_SSE_BUFFER {
+                        log::warn!(
+                            "[{tag}] SSE buffer超过{}KB仍未收到完整事件，作为非SSE响应透传",
+                            MAX_SSE_BUFFER / 1024
+                        );
+                        yield Ok(Bytes::from(std::mem::take(&mut buffer).into_bytes()));
+                        continue;
                     }
 
-                    yield Ok(bytes);
+                    while let Some(event_text) = take_sse_block(&mut buffer) {
+                        if event_text.trim().is_empty() {
+                            continue;
+                        }
+                        let event_name = event_text
+                            .lines()
+                            .find_map(|line| strip_sse_field(line, "event"));
+                        let mut trimmed_data: Option<String> = None;
+                        for line in event_text.lines() {
+                            if let Some(data) = strip_sse_field(line, "data") {
+                                if let Some(c) = &collector {
+                                    c.observe_data(event_name, data);
+                                }
+                                if data.trim() == "[DONE]" {
+                                    log::debug!("[{tag}] <<< SSE: [DONE]");
+                                } else {
+                                    let trimmed = trim_oversized_responses_fields(data);
+                                    if trimmed != data {
+                                        trimmed_data = Some(trimmed);
+                                    }
+                                    let data_for_collect =
+                                        trimmed_data.as_deref().unwrap_or(data);
+                                    let collected = match &collector {
+                                        Some(c) if c.should_collect(data_for_collect) => {
+                                            match serde_json::from_str::<Value>(data_for_collect)
+                                            {
+                                                Ok(json_value) => {
+                                                    c.push(json_value).await;
+                                                    true
+                                                }
+                                                Err(_) => false,
+                                            }
+                                        }
+                                        _ => false,
+                                    };
+                                    log::trace!(
+                                        "[{tag}] <<< SSE data: bytes={}, usage_collected={collected} (content omitted)",
+                                        data_for_collect.len()
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                        let block_bytes = if let Some(trimmed) = trimmed_data {
+                            let mut out = Vec::new();
+                            for l in event_text.lines() {
+                                if strip_sse_field(l, "data").is_some() {
+                                    out.extend_from_slice(b"data: ");
+                                    out.extend_from_slice(trimmed.as_bytes());
+                                } else {
+                                    out.extend_from_slice(l.as_bytes());
+                                }
+                                out.extend_from_slice(b"\n");
+                            }
+                            out.extend_from_slice(b"\n");
+                            out
+                        } else {
+                            let mut block_bytes = event_text.into_bytes();
+                            block_bytes.extend_from_slice(b"\n\n");
+                            block_bytes
+                        };
+                        yield Ok(Bytes::from(block_bytes));
+                    }
                 }
                 Some(Err(e)) => {
                     log::error!("[{tag}] 流错误: {e}");
@@ -842,7 +923,9 @@ pub fn create_logged_passthrough_stream(
                     break;
                 }
                 None => {
-                    // 流正常结束
+                    if !buffer.is_empty() {
+                        yield Ok(Bytes::from(std::mem::take(&mut buffer).into_bytes()));
+                    }
                     break;
                 }
             }
@@ -998,6 +1081,87 @@ mod tests {
         assert!(
             latency_ms >= first_token_ms + 50,
             "first_token_ms={first_token_ms}, latency_ms={latency_ms}"
+        );
+    }
+
+    #[test]
+    fn test_trim_response_in_progress_removes_instructions_and_input() {
+        let data = r#"{"type":"response.in_progress","response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","instructions":"You are Claude Code, Anthropic's official CLI...","input":[{"role":"user"}],"output":[]}}"#;
+        let trimmed = trim_oversized_responses_fields(data);
+        let parsed: serde_json::Value = serde_json::from_str(&trimmed).unwrap();
+
+        assert_eq!(parsed["type"], "response.in_progress");
+        assert_eq!(parsed["response"]["id"], "resp_1");
+        assert_eq!(parsed["response"]["status"], "in_progress");
+        assert_eq!(parsed["response"]["output"], serde_json::json!([]));
+        assert!(parsed["response"].get("instructions").is_none());
+        assert!(parsed["response"].get("input").is_none());
+    }
+
+    #[test]
+    fn test_trim_top_level_instructions() {
+        let data = r#"{"type":"response.created","instructions":"large system prompt","id":"resp_2","object":"response","created_at":1,"status":"in_progress","output":[]}"#;
+        let trimmed = trim_oversized_responses_fields(data);
+        let parsed: serde_json::Value = serde_json::from_str(&trimmed).unwrap();
+        assert_eq!(parsed["type"], "response.created");
+        assert_eq!(parsed["id"], "resp_2");
+        assert!(parsed.get("instructions").is_none());
+    }
+
+    #[test]
+    fn test_trim_does_not_touch_anthropic_events() {
+        let data = r#"{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"x"}}"#;
+        let trimmed = trim_oversized_responses_fields(data);
+        assert_eq!(trimmed, data);
+    }
+
+    #[test]
+    fn test_trim_does_not_touch_output_delta() {
+        let data = r#"{"type":"response.output_item.delta","item_id":"msg_1","output_index":0,"delta":"foo"}"#;
+        let trimmed = trim_oversized_responses_fields(data);
+        let parsed: serde_json::Value = serde_json::from_str(&trimmed).unwrap();
+        assert_eq!(parsed["delta"], "foo");
+    }
+
+    #[test]
+    fn test_trim_invalid_json_passthrough() {
+        let data = "not valid json";
+        assert_eq!(trim_oversized_responses_fields(data), data);
+    }
+
+    #[tokio::test]
+    async fn passthrough_trims_completed_instructions_but_keeps_usage_and_deltas() {
+        let upstream = async_stream::stream! {
+            yield Ok::<_, std::io::Error>(Bytes::from(
+                "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{}}\n\n",
+            ));
+            yield Ok(Bytes::from(
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            ));
+            yield Ok(Bytes::from(
+                "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"instructions\":\"UNIQUE_ECHO_MARKER_DO_NOT_FORWARD\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n\n",
+            ));
+        };
+        let stream = create_logged_passthrough_stream(
+            upstream,
+            "test",
+            None,
+            StreamingTimeoutConfig {
+                first_byte_timeout: 0,
+                idle_timeout: 0,
+            },
+            None,
+        );
+        futures::pin_mut!(stream);
+        let mut out = String::new();
+        while let Some(chunk) = stream.next().await {
+            out.push_str(&String::from_utf8_lossy(&chunk.unwrap()));
+        }
+        assert!(out.contains("hi"), "{out}");
+        assert!(out.contains("input_tokens"), "{out}");
+        assert!(
+            !out.contains("UNIQUE_ECHO_MARKER_DO_NOT_FORWARD"),
+            "instructions echo leaked: {out}"
         );
     }
 

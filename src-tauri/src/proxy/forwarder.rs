@@ -2753,6 +2753,17 @@ impl RequestForwarder {
             } else if !self.non_streaming_timeout.is_zero() {
                 request = request.timeout(self.non_streaming_timeout);
             }
+            // openai_responses / Codex 流式上游（CPA）常回 Connection: close，
+            // reqwest 连接池仍会把连接放回复用，半关闭连接导致空流/502（FWD-004）。
+            // 显式声明不复用，强制每次流式请求新建 TCP。
+            if request_is_streaming
+                && (matches!(
+                    resolved_claude_api_format.as_deref(),
+                    Some("openai_responses")
+                ) || matches!(app_type, AppType::Codex | AppType::GrokBuild))
+            {
+                request = request.header("Connection", "close");
+            }
             for (key, value) in &ordered_headers {
                 request = request.header(key, value);
             }
