@@ -3,24 +3,24 @@
   "items": [
     {
       "type": "fix",
-      "zh": "同步上游 v4.0.19：Kimi 官方账号、Antigravity 配额、Usage 页重构",
-      "zh-TW": "同步上游 v4.0.19：Kimi 官方帳號、Antigravity 配額、Usage 頁重構",
-      "en": "Sync upstream v4.0.19: Kimi official accounts, Antigravity quota, usage page rework",
-      "ja": "上游 v4.0.19 に同期：Kimi 公式アカウント、Antigravity クォータ、使用量ページ刷新"
+      "zh": "同步上游 v4.0.19：Kimi 官方账号与 Antigravity 等更新",
+      "zh-TW": "同步上游 v4.0.19：Kimi 官方帳號與 Antigravity 等更新",
+      "en": "Sync upstream v4.0.19: Kimi official accounts, Antigravity quota and more",
+      "ja": "上游 v4.0.19 に同期：Kimi 公式アカウント、Antigravity クォータ等"
     },
     {
       "type": "fix",
-      "zh": "移除 fork 的 redacted_thinking 补丁（上游已正式修复）",
-      "zh-TW": "移除 fork 的 redacted_thinking 補丁（上游已正式修復）",
-      "en": "Drop the fork redacted_thinking patch (fixed upstream)",
-      "ja": "fork の redacted_thinking パッチを削除（上流で正式修正済み）"
+      "zh": "移除 redacted_thinking 补丁（上游已正式修复）",
+      "zh-TW": "移除 redacted_thinking 補丁（上游已正式修復）",
+      "en": "Drop the redacted_thinking patch (fixed upstream)",
+      "ja": "redacted_thinking パッチを削除（上流で修正済み）"
     },
     {
       "type": "fix",
-      "zh": "保留断流缓解：流式响应裁剪超大回显字段与强制新建连接",
-      "zh-TW": "保留斷流緩解：串流回應裁剪超大回顯欄位與強制新建連線",
-      "en": "Keep stream-drop mitigations: trim oversized echo fields and fresh connections for streaming",
-      "ja": "切断緩和を維持：ストリーミングの巨大エコー削減と新規接続強制"
+      "zh": "保留断流缓解：流式裁剪超大回显字段与强制新建连接",
+      "zh-TW": "保留斷流緩解：串流裁剪超大回顯欄位與強制新建連線",
+      "en": "Keep stream-drop mitigations: trim oversized echo fields, fresh connections",
+      "ja": "切断緩和を維持：巨大エコー削減と新規接続の強制"
     }
   ]
 }
