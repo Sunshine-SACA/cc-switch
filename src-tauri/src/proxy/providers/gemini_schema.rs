@@ -101,6 +101,16 @@ fn requires_parameters_json_schema(schema: &Value) -> bool {
 }
 
 fn object_requires_parameters_json_schema(obj: &Map<String, Value>) -> bool {
+    // A nested node without an explicit `type` cannot survive Gemini's
+    // restricted `parameters` channel (protobuf Schema requires `type` on
+    // every node, including `items`), and only the *top-level* object gets
+    // promoted by `ensure_object_schema`. Examples that must take the rich
+    // channel: `items: {}` (any-typed array elements), free-form objects.
+    // See cc-switch issue #575 / upstream `items: missing field` 400s.
+    if !obj.contains_key("type") && !obj.contains_key("anyOf") {
+        return true;
+    }
+
     for (key, value) in obj {
         match key.as_str() {
             "type" => {
@@ -334,5 +344,60 @@ mod tests {
 
         assert_eq!(result["parameters"]["type"], "string");
         assert!(result["parameters"].get("properties").is_none());
+    }
+
+    /// Regression for issue #575 / `items: missing field` 400s: a nested
+    /// type-less node (e.g. `items: {}` = any-typed array element) must take
+    /// the `parametersJsonSchema` channel, because the restricted `parameters`
+    /// protobuf Schema requires `type` on every nested node and only the
+    /// top-level object is promoted by `ensure_object_schema`.
+    #[test]
+    fn nested_typeless_items_take_json_schema_channel() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "object",
+                    "properties": {
+                        "where": {
+                            "type": "array",
+                            "description": "filter clauses",
+                            "items": {
+                                "type": "array",
+                                "items": {}
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let result = build_gemini_function_declaration("search", None, schema);
+
+        assert!(result.get("parameters").is_none());
+        let params = result
+            .get("parametersJsonSchema")
+            .expect("must use parametersJsonSchema channel");
+        // The type-less node passes through untouched (valid JSON Schema).
+        assert_eq!(
+            params["properties"]["query"]["properties"]["where"]["items"]["items"],
+            json!({})
+        );
+    }
+
+    /// A nested node with only descriptive keywords and no `type` is equally
+    /// unsupported by the restricted channel.
+    #[test]
+    fn nested_description_only_node_takes_json_schema_channel() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "value": { "description": "anything" }
+            }
+        });
+
+        let result = build_gemini_function_declaration("echo", None, schema);
+
+        assert!(result.get("parametersJsonSchema").is_some());
     }
 }

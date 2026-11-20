@@ -1,0 +1,26 @@
+{
+  "version": "4.0.36-saca1",
+  "items": [
+    {
+      "type": "new",
+      "zh": "同步上游 v4.0.36：DSH 支持与多账号隔离等特性",
+      "zh-TW": "同步上游 v4.0.36：DSH 支援與多帳號隔離等特性",
+      "en": "Sync upstream v4.0.36: DSH support, account isolation and more",
+      "ja": "上流 v4.0.36 に同期：DSH 対応、アカウント分離など"
+    },
+    {
+      "type": "improve",
+      "zh": "同步上游 SseBuffer 流式缓冲区与性能优化",
+      "zh-TW": "同步上游 SseBuffer 串流緩衝區與效能最佳化",
+      "en": "Adopt upstream SseBuffer streaming buffer and performance gains",
+      "ja": "上流の SseBuffer 採用によるストリーミング性能改善"
+    },
+    {
+      "type": "fix",
+      "zh": "保留 SACA 定制代理、超大字段裁剪与连接复用补丁",
+      "zh-TW": "保留 SACA 定製代理、超大欄位裁剪與連線複用補丁",
+      "en": "Keep SACA custom proxy, payload trimming, and connection patches",
+      "ja": "SACA プロキシ、巨大フィールド削減と接続パッチを維持"
+    }
+  ]
+}

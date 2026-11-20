@@ -2386,6 +2386,8 @@ impl RequestForwarder {
                 body_bytes,
                 request_is_streaming,
                 preserve_exact_header_case,
+                resolved_claude_api_format.as_deref(),
+                app_type,
             )
             .await?;
 

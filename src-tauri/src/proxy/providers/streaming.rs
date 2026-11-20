@@ -248,6 +248,8 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         let mut current_model = None;
         let mut next_content_index: u32 = 0;
         let mut has_sent_message_start = false;
+        // 修复 GLM 5.2 thinking 碎块：一旦输出过 text content，就不再切回 thinking 块
+        let mut has_emitted_text_content = false;
         // 某些上游 provider（如 OpenRouter 的 kimi-k2.6）会在 tool_use 后发送多个
         // 带 finish_reason 的 SSE chunk。Anthropic 协议要求每个消息流只能有一个
         // message_delta，重复会导致 Claude Code abort 连接。因此需要：
@@ -257,6 +259,14 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
         let mut pending_message_delta: Option<(Option<String>, Option<Value>)> = None;
         let mut stream_ended_with_error = false;
         let mut latest_usage: Option<Value> = None;
+        // 修复：检测上游是否已经是 Anthropic 格式（如 bzboy 中转把 OpenAI 转成了 Anthropic）。
+        // 若是，则直接透传原始 SSE 行，不做 OpenAIStreamChunk 反序列化——否则反序列化失败
+        // 会丢弃所有 content_block_start/stop，导致 Claude Code 收到悬空的 thinking 块永不关闭。
+        let mut passthrough_anthropic = false;
+        let mut passthrough_emitted_message_start = false;
+        // 空thinking过滤：缓存最近一次 content_block_start(thinking)，若后一个事件是
+        // content_block_stop（中间无 thinking_delta），则丢弃这对事件，抑制空thinking碎块
+        let mut pending_empty_thinking_start: Option<String> = None;
         let mut current_non_tool_block_type: Option<&'static str> = None;
         let mut current_non_tool_block_index: Option<u32> = None;
         let mut inline_think = InlineThinkSplitter::default();
@@ -279,6 +289,31 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                             if let Some(data) = strip_sse_field(l, "data") {
                                 if data.trim() == "[DONE]" {
                                     log::debug!("[Claude/OpenRouter] <<< OpenAI SSE: [DONE]");
+
+                                    // DeepSeek 可能在最后一个有效 finish_reason 前发送空值；只有真实结束时才发送终止事件。
+                                    let inferred_stop_reason = if pending_message_delta.is_none()
+                                        && has_sent_message_start
+                                    {
+                                        let has_tool_payload = !open_tool_block_indices.is_empty()
+                                            || tool_blocks_by_index.values().any(|state| {
+                                                state.started
+                                                    || !state.pending_args.is_empty()
+                                                    || !state.id.is_empty()
+                                                    || !state.name.is_empty()
+                                            });
+                                        Some(if has_tool_payload { "tool_use" } else { "end_turn" }.to_string())
+                                    } else {
+                                        None
+                                    };
+
+                                    if pending_message_delta.is_none() {
+                                        if let Some(stop_reason) = inferred_stop_reason {
+                                            pending_message_delta = Some((
+                                                Some(stop_reason),
+                                                latest_usage.clone(),
+                                            ));
+                                        }
+                                    }
 
                                     // 流结束边界：冲刷 inline think 残留（幂等，通常已在前面的
                                     // finish_reason 边界冲刷过）。
@@ -326,6 +361,65 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                     yield Ok(Bytes::from(sse_data));
                                     // [DONE] is terminal; do not read or emit anything after message_stop.
                                     return;
+                                }
+
+                                // 修复：检测上游是否已经是 Anthropic 格式。
+                                // Anthropic 格式特征：data 里有 "type":"message_start" 或
+                                // "type":"content_block_start" 等 Anthropic 专有事件，
+                                // 且没有 OpenAI 的 "choices" 字段。
+                                // 一旦判定为 Anthropic 格式，整条流直接透传原始 SSE 行，
+                                // 跳过 OpenAIStreamChunk 反序列化。
+                                if !passthrough_anthropic
+                                    && (data.contains("\"type\":\"message_start\"")
+                                        || data.contains("\"type\":\"content_block_start\"")
+                                        || data.contains("\"type\":\"content_block_delta\"")
+                                        || data.contains("\"type\":\"content_block_stop\"")
+                                        || data.contains("\"type\":\"message_delta\""))
+                                {
+                                    passthrough_anthropic = true;
+                                    log::debug!("[Claude/OpenRouter] 检测到上游为Anthropic格式，切换为透传模式");
+                                }
+
+                                if passthrough_anthropic {
+                                    // 透传：原样下发原始 SSE 行，保证 content_block_start/stop 配对完整。
+                                    // 空 thinking 过滤：若上一个事件被标记为"空 thinking 块 start"、
+                                    // 当前事件紧跟 content_block_stop（中间无 thinking_delta），则丢弃这对事件。
+                                    if let Some(pending_start) = pending_empty_thinking_start.take() {
+                                        let current_is_stop = data.contains("\"type\":\"content_block_stop\"");
+                                        if current_is_stop {
+                                            // 空 start + 紧跟的 stop（中间无 delta）→ 丢弃这对事件
+                                            log::debug!("[Claude/OpenRouter] >>> 过滤空thinking块 (start+stop无delta)");
+                                            continue;
+                                        }
+                                        // 当前不是 stop（是 thinking_delta 等）→ 空 start 实为正常块开头，先输出缓存的 start
+                                        let pending_sse = format!("data: {}\n\n", pending_start);
+                                        if !passthrough_emitted_message_start {
+                                            log::debug!("[Claude/OpenRouter] >>> Anthropic SSE(passthrough): {}", pending_sse.split(',').next().unwrap_or(""));
+                                            passthrough_emitted_message_start = true;
+                                        }
+                                        yield Ok(Bytes::from(pending_sse));
+                                    }
+
+                                    // 检测当前是否为"空 thinking 块 start"：type=thinking 且 thinking 为空字符串。
+                                    // 采用宽松匹配（thinking:" " 含空字符串），避免误判有内容块。
+                                    let is_empty_thinking_start = data.contains("\"type\":\"content_block_start\"")
+                                        && data.contains("\"type\":\"thinking\"")
+                                        && (data.contains("\"thinking\":\"\"") || data.contains("\"thinking\": \"\""));
+                                    if is_empty_thinking_start {
+                                        // 缓存空 start，等待下一个事件决定去留：
+                                        // - 下个事件若是 stop → 放弃了（空块）
+                                        // - 下个事件若是非 stop → 正常块开头，先输出缓存的 start
+                                        pending_empty_thinking_start = Some(data.to_string());
+                                        continue;
+                                    }
+
+                                    let sse_data = format!("data: {}\n\n", data);
+                                    if !passthrough_emitted_message_start {
+                                        log::debug!("[Claude/OpenRouter] >>> Anthropic SSE(passthrough): {}", data.split(',').next().unwrap_or(""));
+                                        passthrough_emitted_message_start = true;
+                                    }
+                                    yield Ok(Bytes::from(sse_data));
+                                    continue;
                                 }
 
                                 if let Ok(chunk) = serde_json::from_str::<OpenAIStreamChunk>(data) {
@@ -394,11 +488,16 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                         // 导致单个 chunk 内 text/thinking 块被反复关闭重开，正文碎片化。
                                         // 非流式路径 openai_to_anthropic 已对 reasoning_content 做同样的空值过滤，
                                         // 此处与之保持一致（也与下方 content 分支的 !content.is_empty() 对称）。
+                                        // 另外：一旦输出过 content（text），就不再切回 thinking 块。
+                                        // Anthropic 原生协议中 thinking 在前、text 在后，不会交错。
+                                        // GLM 5.2 上游会把 reasoning 和 content 频繁交替输出，
+                                        // 若每次交替都切换块类型，会导致大量碎 thought 块 + 文字断字。
                                         if let Some(reasoning) = choice
                                             .delta
                                             .reasoning
                                             .as_ref()
                                             .filter(|r| !r.is_empty())
+                                            .filter(|_| !has_emitted_text_content)
                                         {
                                             for sse_data in non_tool_block_events(
                                                 "thinking",
@@ -416,6 +515,7 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                         // thinking，剩余正文按原逻辑下发。
                                         if let Some(content) = &choice.delta.content {
                                             if !content.is_empty() {
+                                                has_emitted_text_content = true;
                                                 let (thinking, text) = inline_think.push(content);
                                                 for (block_type, delta) in
                                                     [("thinking", thinking), ("text", text)]
@@ -612,8 +712,7 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                         // 注意：OpenRouter 某些 provider 会发送多个带 finish_reason 的 chunk
                                         // （第一个 usage 为 null，后续才补全）。此处只做缓存，不立即发送，
                                         // 等到 [DONE] 或流末尾再统一发出，确保 usage 完整且只发一次。
-                                        if let Some(finish_reason) = &choice.finish_reason {
-                                            let stop_reason = map_stop_reason(Some(finish_reason));
+                                        if let Some(stop_reason) = map_stop_reason(choice.finish_reason.as_deref()) {
                                             let usage_json =
                                                 chunk_usage_json.clone().or_else(|| latest_usage.clone());
 
@@ -735,7 +834,7 @@ pub fn create_anthropic_sse_stream<E: std::error::Error + Send + 'static>(
                                             }
 
                                             // 缓存 message_delta，等到 [DONE] 时发送（以便收集完整的 usage）
-                                            pending_message_delta = Some((stop_reason, usage_json));
+                                            pending_message_delta = Some((Some(stop_reason), usage_json));
                                         }
                                     }
                                 }
@@ -863,8 +962,12 @@ fn extract_cache_write_tokens(usage: &Usage) -> Option<u32> {
 
 /// 映射停止原因
 fn map_stop_reason(finish_reason: Option<&str>) -> Option<String> {
-    finish_reason.map(|r| {
-        match r {
+    let reason = finish_reason?.trim();
+    if reason.is_empty() {
+        return None;
+    }
+    Some(
+        match reason {
             "tool_calls" | "function_call" => "tool_use",
             "stop" => "end_turn",
             "length" => "max_tokens",
@@ -874,8 +977,8 @@ fn map_stop_reason(finish_reason: Option<&str>) -> Option<String> {
                 "end_turn"
             }
         }
-        .to_string()
-    })
+        .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -2165,5 +2268,129 @@ mod tests {
         )
         .await
         .expect("a terminal response must not await another upstream chunk");
+    }
+
+    #[test]
+    fn test_map_stop_reason_ignores_empty_values() {
+        assert_eq!(map_stop_reason(None), None);
+        assert_eq!(map_stop_reason(Some("")), None);
+        assert_eq!(map_stop_reason(Some("   ")), None);
+        assert_eq!(map_stop_reason(Some("stop")), Some("end_turn".to_string()));
+        assert_eq!(
+            map_stop_reason(Some("tool_calls")),
+            Some("tool_use".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_empty_thinking_block_followed_by_stop_is_filtered() {
+        let input = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-7-sonnet-20250219\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let events = collect_anthropic_events(input).await;
+        let starts: Vec<&Value> = events
+            .iter()
+            .filter(|e| event_type(e) == Some("content_block_start"))
+            .collect();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["content_block"]["type"], "text");
+
+        let stops: Vec<&Value> = events
+            .iter()
+            .filter(|e| event_type(e) == Some("content_block_stop"))
+            .collect();
+        assert_eq!(stops.len(), 1);
+
+        assert_eq!(
+            collect_delta_text(&events, "text_delta", "/delta/text"),
+            "Hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_empty_thinking_block_in_anthropic_format_is_preserved() {
+        let input = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-7-sonnet-20250219\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me think...\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":5}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let events = collect_anthropic_events(input).await;
+        let starts: Vec<&Value> = events
+            .iter()
+            .filter(|e| event_type(e) == Some("content_block_start"))
+            .collect();
+        assert_eq!(starts.len(), 2);
+        assert_eq!(starts[0]["content_block"]["type"], "thinking");
+        assert_eq!(starts[1]["content_block"]["type"], "text");
+
+        assert_eq!(
+            collect_delta_text(&events, "thinking_delta", "/delta/thinking"),
+            "Let me think..."
+        );
+        assert_eq!(
+            collect_delta_text(&events, "text_delta", "/delta/text"),
+            "Hello"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reasoning_ignored_after_text_has_started() {
+        let input = concat!(
+            "data: {\"id\":\"chatcmpl_rev\",\"model\":\"deepseek-v4.1-flash\",\"choices\":[{\"delta\":{\"content\":\"First text\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_rev\",\"model\":\"deepseek-v4.1-flash\",\"choices\":[{\"delta\":{\"reasoning_content\":\"late thinking\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_rev\",\"model\":\"deepseek-v4.1-flash\",\"choices\":[{\"delta\":{\"content\":\" and second text\"}}]}\n\n",
+            "data: {\"id\":\"chatcmpl_rev\",\"model\":\"deepseek-v4.1-flash\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let events = collect_anthropic_events(input).await;
+
+        let starts: Vec<&Value> = events
+            .iter()
+            .filter(|e| event_type(e) == Some("content_block_start"))
+            .collect();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(starts[0]["content_block"]["type"], "text");
+
+        let thinking = collect_delta_text(&events, "thinking_delta", "/delta/thinking");
+        assert!(
+            thinking.is_empty(),
+            "reasoning after text started must be ignored"
+        );
+
+        let text = collect_delta_text(&events, "text_delta", "/delta/text");
+        assert_eq!(text, "First text and second text");
     }
 }

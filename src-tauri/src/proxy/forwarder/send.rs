@@ -18,6 +18,8 @@ impl RequestForwarder {
         body_bytes: Vec<u8>,
         request_is_streaming: bool,
         preserve_exact_header_case: bool,
+        resolved_claude_api_format: Option<&str>,
+        app_type: &AppType,
     ) -> Result<ProxyResponse, ProxyError> {
         // 确定超时
         let timeout = if self.non_streaming_timeout.is_zero() {
@@ -50,6 +52,15 @@ impl RequestForwarder {
                 request = request.timeout(std::time::Duration::from_secs(24 * 60 * 60));
             } else if !self.non_streaming_timeout.is_zero() {
                 request = request.timeout(self.non_streaming_timeout);
+            }
+            // openai_responses / Codex 流式上游（CPA）常回 Connection: close，
+            // reqwest 连接池仍会把连接放回复用，半关闭连接导致空流/502（FWD-004）。
+            // 显式声明不复用，强制每次流式请求新建 TCP。
+            if request_is_streaming
+                && (matches!(resolved_claude_api_format, Some("openai_responses"))
+                    || matches!(app_type, AppType::Codex | AppType::GrokBuild))
+            {
+                request = request.header("Connection", "close");
             }
             for (key, value) in &headers {
                 request = request.header(key, value);
